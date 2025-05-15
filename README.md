@@ -25,22 +25,22 @@
 
 ## Step 1: Preprocessing CODEX and H&E images
 * Use the palom package to co-register CODEX and H&E images and obtain the registered CODEX images.
-* Run extract_marker_info_patch.py to extract protein expression for each image patch.
-* Construct the dataset with paired histopathology images and matched protein expression using the extract_he_patch.py script.
+* Run `extract_marker_info_patch.py` to extract protein expression for each image patch.
+* Construct the dataset with paired histopathology images and matched protein expression using the `extract_he_patch.py` script.
 
 ## Step 2: train and test HEX
-* Start training using torchrun --nnodes=1 --nproc-per-node=8 ./hex/train_dist_codex_lung_marker.py. 
+* Start training using `torchrun --nnodes=1 --nproc-per-node=8 ./hex/train_dist_codex_lung_marker.py`. 
 Logs and checkpoints will be saved to writer_dir and checkpoint_dir, respectively.
-* Evaluate your model checkpoint by running python test_codex_lung_marker.py with checkpoint_path specify the <save_location>/models/your_checkpoint.pth. 
-Output results will be stored in save_dir. To get you started, example data are provided in the folder hex/sample_data.
+* Evaluate your model checkpoint by running `python test_codex_lung_marker.py` with checkpoint_path specify the `<save_location>/models/your_checkpoint.pth`. 
+Output results will be stored in `save_dir`. To get you started, example data are provided in the folder `hex/sample_data`.
 
 ## Step 3: train and test MICA
 * Use CLAM to preprocess WSIs and generate histology feature bag via MUSK. This step follows the MCAT pipeline.
-* Apply the trained HEX to generate corresponding CODEX image for each WSI, then run codex_h5_png2fea.py to construct CODEX feature bag via DINOv2
-* Start training via run train_mica.py. For unimodal training, you can run python train_mica.py --mode path. For multimodal training, you can run python train_mica.py --mode coattn
-Resulting training logs and model checkpoints will be placed in results_dir. Example data are provided in mica/sample_data, and your data structure should follow the MCAT format.
-* Evaluate your model checkpoint by running python test_mica.py. The results are placed into results_pkl_path.
-* To explore biological relevance of the model predictions, users can explore the spatial patterns using the calculated integrated gradients (IG) values genereated by test_mica.py alongside the corresponding CODEX images.
+* Apply the trained HEX to generate corresponding CODEX image for each WSI, then run `codex_h5_png2fea.py` to construct CODEX feature bag via DINOv2
+* Start training via run `train_mica.py`. For unimodal training, you can run `python train_mica.py --mode path`. For multimodal training, you can run `python train_mica.py --mode coattn`
+Resulting training logs and model checkpoints will be placed in `results_di`r. Example data are provided in `mica/sample_data`, and your data structure should follow the MCAT format.
+* Evaluate your model checkpoint by running `python test_mica.py`. The results are placed into `results_pkl_path`.
+* To explore biological relevance of the model predictions, users can explore the spatial patterns using the calculated integrated gradients (IG) values genereated by `test_mica.py` alongside the corresponding CODEX images.
 
 
 
