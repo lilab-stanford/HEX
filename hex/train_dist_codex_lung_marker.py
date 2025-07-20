@@ -22,7 +22,7 @@ from torch.cuda.amp import autocast
 
 from scipy.stats import pearsonr
 import robust_loss_pytorch
-
+from hex.hex_architecture import CustomModel
 
 def setup():
     dist.init_process_group("nccl")
@@ -158,6 +158,16 @@ def main():
 
     num_outputs = len(label_columns)
     model = CustomModel(visual_output_dim=1024, num_outputs=num_outputs).to(device)
+    pretrained = False  # Set to True if you want to load your pretrained weights or the provided demo checkpoint
+    if pretrained:
+        # Load the saved weights
+        checkpoint_path = "./sample_checkpoints.pth"
+        if os.path.exists(checkpoint_path):
+            state_dict = torch.load(checkpoint_path, map_location="cpu")
+            model.load_state_dict(state_dict, strict=False)
+            print(f"Loaded model weights from {checkpoint_path}")
+        else:
+            print(f"No checkpoint found at {checkpoint_path}, starting from scratch")
     model = DDP(model, device_ids=[local_rank],find_unused_parameters=True)
 
 
