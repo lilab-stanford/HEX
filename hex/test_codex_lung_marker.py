@@ -12,7 +12,7 @@ from scipy.stats import pearsonr
 from tqdm import tqdm
 from timm.data.constants import IMAGENET_INCEPTION_MEAN, IMAGENET_INCEPTION_STD
 from torch.cuda.amp import autocast
-
+from hex.hex_architecture import CustomModel
 
 # Define biomarker names
 biomarker_names = {
@@ -61,7 +61,7 @@ biomarker_names = {
 def load_model(checkpoint_path):
     try:
         model = CustomModel(visual_output_dim=1024, num_outputs=40)
-        model.load_state_dict(torch.load(checkpoint_path, map_location='cpu'))
+        model.load_state_dict(torch.load(checkpoint_path, map_location='cpu'), strict=False)
         model = nn.DataParallel(model).cuda()
         model.eval()
         model.module.training_status = False
@@ -74,7 +74,7 @@ def main():
     device='cuda'
     save_dir = ""
     # Load the model
-    checkpoint_path = join(save_dir, 'checkpoint_epoch.pth')
+    checkpoint_path = join(save_dir, 'checkpoint.pth')# replace with your checkpoint path or the provided demo checkpoint
     model = load_model(checkpoint_path)
 
     # Prepare the dataset
