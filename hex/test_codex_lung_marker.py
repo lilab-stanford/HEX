@@ -74,7 +74,7 @@ def main():
     device='cuda'
     save_dir = ""
     # Load the model
-    checkpoint_path = join(save_dir, 'checkpoint.pth')# replace with your checkpoint path or the provided demo checkpoint
+    checkpoint_path = join(save_dir, 'checkpoint.pth')# replace with your checkpoint path or the provided demo checkpoint (pipeline-only; not the paper-trained checkpoint)
     model = load_model(checkpoint_path)
 
     # Prepare the dataset
