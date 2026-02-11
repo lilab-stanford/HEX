@@ -126,7 +126,7 @@ def main():
         for i, data in val_loop:
             inputs, labels = data[0].to(device,non_blocking=True), data[1].to(torch.float32)
             image_paths = data[2]
-            outputs,_ = model(inputs,0)
+            outputs,_ = model(inputs)
             all_preds.extend(outputs.detach().cpu().numpy())
             all_labels.extend(labels.numpy())
             all_image_paths.extend(image_paths)
