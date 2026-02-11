@@ -38,7 +38,7 @@ def summary_survival(model, loader, n_classes,use_ig):
     all_censorships = np.zeros((len(loader)))
     all_event_times = np.zeros((len(loader)))
 
-    slide_ids = loader.dataset.slide_data['slide_id']
+    slide_ids = loader.dataset.slide_data['slide_id'].reset_index(drop=True)
     patient_results = {}
 
     for batch_idx, (data_WSI, codex_feature, label, event_time, c) in enumerate(loader):
@@ -58,7 +58,7 @@ def summary_survival(model, loader, n_classes,use_ig):
             ig = IntegratedGradients(interpret_patient_mm)
             data_WSI.requires_grad_()
             codex_feature.requires_grad_()
-            ig_attr = ig.attribute(data_WSI, n_steps=1)
+            ig_attr = ig.attribute(data_WSI)
             ig_attr = ig_attr.detach().cpu().numpy()
             ig_attr = np.sum(ig_attr, axis=1)
         else:
@@ -73,8 +73,7 @@ def summary_survival(model, loader, n_classes,use_ig):
         patient_results.update({slide_id: {'slide_id': np.array(slide_id), 'risk': risk, 'disc_label': label.item(),
                                            'survival': event_time, 'censorship': c,'ig': ig_attr}})
 
-    c_index = \
-    concordance_index_censored((1 - all_censorships).astype(bool), all_event_times, all_risk_scores, tied_tol=1e-08)[0]
+    c_index = concordance_index_censored((1 - all_censorships).astype(bool), all_event_times, all_risk_scores, tied_tol=1e-08)[0]
     return patient_results, c_index
 
 def main(args):
@@ -104,69 +103,71 @@ def main(args):
         train_dataset, val_dataset = dataset.return_splits(from_id=False,
                                                            csv_path='{}/splits_{}.csv'.format(args.split_dir, i))
 
+        # --- split sanity check (unit=slide_id): train/val must not share slides ---
+        train_slides = set(train_dataset.slide_data["slide_id"].astype(str).tolist())
+        val_slides = set(val_dataset.slide_data["slide_id"].astype(str).tolist())
+        overlap = train_slides & val_slides
+        assert len(overlap) == 0, f"[SPLIT ERROR] train/val share slide_id: {list(sorted(overlap))[:10]}"
+
+        # --- patient overlap check (if patient_id is available) ---
+        if "patient_id" in train_dataset.slide_data.columns and "patient_id" in val_dataset.slide_data.columns:
+            train_patients = set(train_dataset.slide_data["patient_id"].astype(str).tolist())
+            val_patients = set(val_dataset.slide_data["patient_id"].astype(str).tolist())
+            p_overlap = train_patients & val_patients
+            assert len(p_overlap) == 0, f"[SPLIT ERROR] train/val share patient_id: {list(sorted(p_overlap))[:10]}"
+
         print('training: {}, validation: {}'.format(len(train_dataset), len(val_dataset)))
         datasets = (train_dataset, val_dataset)
-
-        args.omic_input_dim = 0
 
         ### Run Train-Val on Survival Task.
         if args.task_type == 'survival':
             train_split, val_split = datasets
 
             print('\nInit Model...', end=' ')
+            dropout = 0.25 if args.drop_out else 0.0
             model_dict = {"dropout": args.drop_out, 'n_classes': args.n_classes}
             args.fusion = None if args.fusion == 'None' else args.fusion
 
 
-            if args.model_type == 'amil':
-                model_dict = {'omic_input_dim': args.omic_input_dim, 'fusion': args.fusion, 'n_classes': args.n_classes}
-                model = MIL_Attention_FC_surv(**model_dict)
-            elif args.model_type == 'cmil':
-                model_dict = {'omic_input_dim': args.omic_input_dim, 'fusion': args.fusion, 'n_classes': args.n_classes}
-                model = CMIL_Attention_FC_surv(**model_dict)
-            elif args.model_type == 'mcat':
-                model_dict = {'fusion': args.fusion, 'omic_sizes': args.omic_sizes, 'n_classes': args.n_classes}
-                model = MCAT_Surv(**model_dict)
+            if args.model_type == 'mcat':
+                model_dict = {
+                    'fusion': args.fusion,
+                    'n_classes': args.n_classes,
+                    'dropout': dropout,
+                    'transformer_mode': args.transformer_mode,
+                    'pooling': args.pooling,
+                }
+                model = MCAT_Surv(**model_dict).to(device)
             else:
                 raise NotImplementedError
 
-            if hasattr(model, "relocate"):
-                model.relocate()
-            else:
-                model = model.to(torch.device('cuda'))
             print('Done!')
             print_network(model)
 
 
             print('\nInit Loaders...', end=' ')
-            train_loader = get_split_loader(train_split, testing=args.testing, mode=args.mode, batch_size=args.batch_size)
-            val_loader = get_split_loader(val_split, testing=args.testing, mode=args.mode, batch_size=args.batch_size)
+            train_loader = get_split_loader(train_split, mode=args.mode, batch_size=args.batch_size)
+            val_loader = get_split_loader(val_split, mode=args.mode, batch_size=args.batch_size)
             print('Done!')
 
-            model.load_state_dict(torch.load(os.path.join(args.results_dir, "s_{}_checkpoint.pt".format(i))))
-            use_ig=True
-            if args.mode == 'coattn':
-                results_train_dict, train_cindex = summary_survival_coattn(model, train_loader, args.n_classes,use_ig)
-                results_val_dict, val_cindex = summary_survival_coattn(model, val_loader, args.n_classes,use_ig)
-            else:
-                results_train_dict, train_cindex = summary_survival(model, train_loader, args.n_classes,use_ig)
-                results_val_dict, val_cindex = summary_survival(model, val_loader, args.n_classes, use_ig)
+            model.load_state_dict(torch.load(os.path.join(args.results_dir, "s_{}_checkpoint.pt".format(i)), map_location=device))
+            use_ig=False
+            results_val_dict, val_cindex = summary_survival(model, val_loader, args.n_classes,use_ig)
             print('Val c-Index: {:.4f}'.format(val_cindex))
-            latest_val_cindex.append(train_cindex)
+            latest_val_cindex.append(val_cindex)
 
         ### Write Results for Each Split to PKL
-        save_pkl(results_pkl_path, {'all': results_train_dict, 'val': results_val_dict})
+        save_pkl(results_pkl_path, {'val': results_val_dict})
         end_time = timer()
         print('Fold %d Time: %f seconds' % (i, end_time - start_time))
 
         ### Finish 5-Fold CV Evaluation.
-        if args.task_type == 'survival':
-            final_df1 = pd.DataFrame(latest_val_cindex)
-            final_df1['folds'] = final_df1.index
-            final_df1['folds'] = final_df1['folds'] + start
-            final_df = pd.DataFrame({'folds': np.arange(start, i + 1)})
-            final_df = pd.merge(final_df, final_df1, how='left', on=['folds'])
-            final_df.reset_index(drop=True, inplace=True)
+        final_df1 = pd.DataFrame(latest_val_cindex)
+        final_df1['folds'] = final_df1.index
+        final_df1['folds'] = final_df1['folds'] + start
+        final_df = pd.DataFrame({'folds': np.arange(start, i + 1)})
+        final_df = pd.merge(final_df, final_df1, how='left', on=['folds'])
+        final_df.reset_index(drop=True, inplace=True)
 
         final_df.to_csv(os.path.join(args.results_dir, f'summary_latest_{start}_{end}.csv'))
 
@@ -183,26 +184,31 @@ parser.add_argument('--k_end', type=int, default=-1, help='End fold (Default: -1
 parser.add_argument('--results_dir', type=str, default='./results', help='Results directory (Default: ./results)')
 parser.add_argument('--which_splits', type=str, default='5foldcv',
                     help='Which splits folder to use in ./splits/ (Default: ./splits/5foldcv')
-parser.add_argument('--split_dir', type=str, default='tcga_blca_100',
-                    help='Which cancer type within ./splits/<which_splits> to use for training. Used synonymously for "task" (Default: tcga_blca_100)')
 parser.add_argument('--log_data', action='store_true', default=True, help='Log data using tensorboard')
 parser.add_argument('--overwrite', action='store_true', default=False,
                     help='Whether or not to overwrite experiments (if already ran)')
+parser.add_argument('--project_name', type=str, default='tcga-stad', help='prject name')
+parser.add_argument('--task', type=str, default='survival',
+                    help="Task name; should contain 'survival' for this script (Default: survival)")
+
 
 ### Model Parameters.
 parser.add_argument('--model_type', type=str, choices=['snn', 'deepset', 'amil', 'mi_fcn', 'mcat'], default='mcat',
                     help='Type of model (Default: mcat)')
-parser.add_argument('--mode', type=str, choices=['omic', 'path', 'pathomic', 'cluster', 'coattn'], default='coattn',
+parser.add_argument('--mode', type=str, choices=['coattn'], default='coattn',
                     help='Specifies which modalities to use / collate function in dataloader.')
 parser.add_argument('--fusion', type=str, choices=['None', 'concat', 'bilinear'], default='concat',
                     help='Type of fusion. (Default: concat).')
+parser.add_argument('--transformer_mode', type=str, choices=['separate', 'shared'], default='separate',
+                    help="Transformer weights across modalities.")
+parser.add_argument('--pooling', type=str, choices=['gap', 'attn'], default='attn',
+                    help="Global pooling after transformer.")
 parser.add_argument('--apply_sig', action='store_true', default=False,
                     help='Use genomic features as signature embeddings.')
 parser.add_argument('--apply_sigfeats', action='store_true', default=False,
                     help='Use genomic features as tabular features.')
 parser.add_argument('--drop_out', action='store_true', default=True, help='Enable dropout (p=0.25)')
 parser.add_argument('--model_size_wsi', type=str, default='small', help='Network size of AMIL model')
-parser.add_argument('--model_size_omic', type=str, default='small', help='Network size of SNN model')
 
 ### Optimizer Parameters + Survival Loss Function
 parser.add_argument('--opt', type=str, choices=['adam', 'sgd'], default='adam')
@@ -217,15 +223,15 @@ parser.add_argument('--bag_weight', type=float, default=0.7,
                     help='clam: weight coefficient for bag-level loss (default: 0.7)')
 parser.add_argument('--reg', type=float, default=1e-5, help='L2-regularization weight decay (default: 1e-5)')
 parser.add_argument('--alpha_surv', type=float, default=0.0, help='How much to weigh uncensored patients')
-parser.add_argument('--reg_type', type=str, choices=['None', 'omic', 'pathomic'], default='None',
-                    help='Which network submodules to apply L1-Regularization (default: None)')
 parser.add_argument('--lambda_reg', type=float, default=1e-4, help='L1-Regularization Strength (Default 1e-4)')
 parser.add_argument('--weighted_sample', action='store_true', default=False, help='Enable weighted sampling')
 parser.add_argument('--early_stopping', action='store_true', default=False, help='Enable early stopping')
 
 args = parser.parse_args()
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+args.split_dir = args.project_name
+args.task = '_'.join(args.split_dir.split('_')[:2]) + '_survival'
+args = get_custom_exp_code(args)
 
 ### Sets Seed for reproducible experiments.
 def seed_torch(seed=7):
@@ -260,7 +266,6 @@ settings = {'num_splits': args.k,
             'seed': args.seed,
             'model_type': args.model_type,
             'model_size_wsi': args.model_size_wsi,
-            'model_size_omic': args.model_size_omic,
             "use_drop_out": args.drop_out,
             'weighted_sample': args.weighted_sample,
             'gc': args.gc,
