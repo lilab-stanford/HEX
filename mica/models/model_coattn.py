@@ -1,6 +1,3 @@
-from collections import OrderedDict
-from os.path import join
-import pdb
 
 import numpy as np
 
@@ -8,40 +5,56 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from models.model_utils import *
-
 
 ###########################
 ### MCAT Implementation ###
 ###########################
 class MCAT_Surv(nn.Module):
-    def __init__(self, fusion='concat', omic_sizes=[100, 200, 300, 400, 500, 600], n_classes=4,
-                 model_size_wsi: str = 'small', model_size_omic: str = 'small', dropout=0.25):
+    def __init__(self, fusion='concat', n_classes=4,
+                 model_size_wsi: str = 'small', dropout=0.25,
+                 transformer_mode: str = 'separate', pooling: str = 'gap'):
         super(MCAT_Surv, self).__init__()
         self.fusion = fusion
-        self.omic_sizes = omic_sizes
         self.n_classes = n_classes
+        self.transformer_mode = transformer_mode
+        self.pooling = pooling
         self.size_dict_WSI = {"small": [1024, 256, 256], "big": [1024, 512, 384]}
 
         ### FC Layer over WSI bag
         size = self.size_dict_WSI[model_size_wsi]
         fc = [nn.Linear(size[0], size[1]), nn.ReLU()]
-        fc.append(nn.Dropout(0.25))
+        fc.append(nn.Dropout(dropout))
         self.wsi_net = nn.Sequential(*fc)
         fc = [nn.Linear(384, size[1]), nn.ReLU()]
-        fc.append(nn.Dropout(0.25))
+        fc.append(nn.Dropout(dropout))
         self.codex_net = nn.Sequential(*fc)
 
 
         ### Multihead Attention
         self.coattn = MultiheadAttention(embed_dim=256, num_heads=1)
 
-        ### Path Transformer + Attention Head
+        ### MIL Transformers (H&E and CODEX)
         path_encoder_layer = nn.TransformerEncoderLayer(d_model=256, nhead=8, dim_feedforward=512, dropout=dropout,
                                                         activation='relu')
         self.path_transformer = nn.TransformerEncoder(path_encoder_layer, num_layers=2)
+
+        if transformer_mode == 'shared':
+            self.codex_transformer = self.path_transformer
+        else:
+            codex_encoder_layer = nn.TransformerEncoderLayer(d_model=256, nhead=8, dim_feedforward=512, dropout=dropout,
+                                                             activation='relu')
+            self.codex_transformer = nn.TransformerEncoder(codex_encoder_layer, num_layers=2)
+
+        ### Global pooling after transformer:
         self.path_attention_head = Attn_Net_Gated(L=size[2], D=size[2], dropout=dropout, n_classes=1)
         self.path_rho = nn.Sequential(*[nn.Linear(size[2], size[2]), nn.ReLU(), nn.Dropout(dropout)])
+
+        if transformer_mode == 'shared':
+            self.codex_attention_head = self.path_attention_head
+            self.codex_rho = self.path_rho
+        else:
+            self.codex_attention_head = Attn_Net_Gated(L=size[2], D=size[2], dropout=dropout, n_classes=1)
+            self.codex_rho = nn.Sequential(*[nn.Linear(size[2], size[2]), nn.ReLU(), nn.Dropout(dropout)])
 
         ### Fusion Layer
         if self.fusion == 'concat':
@@ -49,7 +62,7 @@ class MCAT_Surv(nn.Module):
         elif self.fusion == 'bilinear':
             self.mm = BilinearFusion(dim1=256, dim2=256, scale_dim1=8, scale_dim2=8, mmhid=256)
         else:
-            self.mm = None
+            raise ValueError(f"Unsupported fusion: {self.fusion}. Use 'concat' or 'bilinear'.")
 
         ### Classifier
         self.classifier = nn.Linear(size[2], n_classes)
@@ -64,24 +77,40 @@ class MCAT_Surv(nn.Module):
         # Coattn
         h_path_coattn, A_coattn = self.coattn(h_codex_bag, h_path_bag, h_path_bag)
 
-        ### Path
+        ### H&E (CODEX-guided) transformer
         h_path_trans = self.path_transformer(h_path_coattn)
-        A_path, h_path = self.path_attention_head(h_path_trans.squeeze(1))
-        A_path = torch.transpose(A_path, 1, 0)
-        h_path = torch.mm(F.softmax(A_path, dim=1), h_path)
-        h_path = self.path_rho(h_path).squeeze()
 
-        ### Codex
-        h_omic_trans = self.path_transformer(h_codex_bag)
-        A_omic, h_omic = self.path_attention_head(h_omic_trans.squeeze(1))
-        A_omic = torch.transpose(A_omic, 1, 0)
-        h_omic = torch.mm(F.softmax(A_omic, dim=1), h_omic)
-        h_omic = self.path_rho(h_omic).squeeze()
+        if self.pooling == 'gap':
+            h_path = h_path_trans.mean(dim=0).squeeze(0)
+            A_path = None
+        elif self.pooling == 'attn':
+            A_path, h_path_tokens = self.path_attention_head(h_path_trans.squeeze(1))
+            A_path = torch.transpose(A_path, 1, 0)
+            h_path = torch.mm(F.softmax(A_path, dim=1), h_path_tokens)
+            h_path = self.path_rho(h_path).squeeze()
+        else:
+            raise ValueError(f"Unsupported pooling: {self.pooling}")
+
+        ### CODEX transformer
+        h_codex_trans = self.codex_transformer(h_codex_bag)
+
+        if self.pooling == 'gap':
+            h_codex = h_codex_trans.mean(dim=0).squeeze(0)
+            A_codex = None
+        elif self.pooling == 'attn':
+            A_codex, h_codex_tokens = self.codex_attention_head(h_codex_trans.squeeze(1))
+            A_codex = torch.transpose(A_codex, 1, 0)
+            h_codex = torch.mm(F.softmax(A_codex, dim=1), h_codex_tokens)
+            h_codex = self.codex_rho(h_codex).squeeze()
+        else:
+            raise ValueError(f"Unsupported pooling: {self.pooling}")
 
         if self.fusion == 'bilinear':
-            h = self.mm(h_path.unsqueeze(dim=0), h_omic.unsqueeze(dim=0)).squeeze()
+            h = self.mm(h_path.unsqueeze(dim=0), h_codex.unsqueeze(dim=0)).squeeze()
         elif self.fusion == 'concat':
-            h = self.mm(torch.cat([h_path, h_omic], axis=0))
+            h = self.mm(torch.cat([h_path, h_codex], axis=0))
+        else:
+            raise ValueError(f"Unsupported fusion: {self.fusion}. Use 'concat' or 'bilinear'.")
 
         ### Survival Layer
         logits = self.classifier(h).unsqueeze(0)
@@ -89,7 +118,7 @@ class MCAT_Surv(nn.Module):
         hazards = torch.sigmoid(logits)
         S = torch.cumprod(1 - hazards, dim=1)
 
-        attention_scores = {'coattn': A_coattn, 'path': A_path, 'omic': A_omic}
+        attention_scores = {'coattn': A_coattn, 'path': A_path, 'omic': A_codex}
 
         return hazards, S, Y_hat, attention_scores
 
@@ -583,3 +612,102 @@ class MultiheadAttention(Module):
                 training=self.training,
                 key_padding_mask=key_padding_mask, need_weights=need_weights, need_raw=need_raw,
                 attn_mask=attn_mask)
+
+class BilinearFusion(nn.Module):
+    r"""
+    Late Fusion Block using Bilinear Pooling
+
+    args:
+        skip (int): Whether to input features at the end of the layer
+        use_bilinear (bool): Whether to use bilinear pooling during information gating
+        gate1 (bool): Whether to apply gating to modality 1
+        gate2 (bool): Whether to apply gating to modality 2
+        dim1 (int): Feature mapping dimension for modality 1
+        dim2 (int): Feature mapping dimension for modality 2
+        scale_dim1 (int): Scalar value to reduce modality 1 before the linear layer
+        scale_dim2 (int): Scalar value to reduce modality 2 before the linear layer
+        mmhid (int): Feature mapping dimension after multimodal fusion
+        dropout_rate (float): Dropout rate
+    """
+    def __init__(self, skip=0, use_bilinear=0, gate1=1, gate2=1, dim1=128, dim2=128, scale_dim1=1, scale_dim2=1, mmhid=256, dropout_rate=0.25):
+        super(BilinearFusion, self).__init__()
+        self.skip = skip
+        self.use_bilinear = use_bilinear
+        self.gate1 = gate1
+        self.gate2 = gate2
+
+        dim1_og, dim2_og, dim1, dim2 = dim1, dim2, dim1//scale_dim1, dim2//scale_dim2
+        skip_dim = dim1_og+dim2_og if skip else 0
+
+        self.linear_h1 = nn.Sequential(nn.Linear(dim1_og, dim1), nn.ReLU())
+        self.linear_z1 = nn.Bilinear(dim1_og, dim2_og, dim1) if use_bilinear else nn.Sequential(nn.Linear(dim1_og+dim2_og, dim1))
+        self.linear_o1 = nn.Sequential(nn.Linear(dim1, dim1), nn.ReLU(), nn.Dropout(p=dropout_rate))
+
+        self.linear_h2 = nn.Sequential(nn.Linear(dim2_og, dim2), nn.ReLU())
+        self.linear_z2 = nn.Bilinear(dim1_og, dim2_og, dim2) if use_bilinear else nn.Sequential(nn.Linear(dim1_og+dim2_og, dim2))
+        self.linear_o2 = nn.Sequential(nn.Linear(dim2, dim2), nn.ReLU(), nn.Dropout(p=dropout_rate))
+
+        self.post_fusion_dropout = nn.Dropout(p=dropout_rate)
+        self.encoder1 = nn.Sequential(nn.Linear((dim1+1)*(dim2+1), 256), nn.ReLU(), nn.Dropout(p=dropout_rate))
+        self.encoder2 = nn.Sequential(nn.Linear(256+skip_dim, mmhid), nn.ReLU(), nn.Dropout(p=dropout_rate))
+
+    def forward(self, vec1, vec2):
+        ### Gated Multimodal Units
+        if self.gate1:
+            h1 = self.linear_h1(vec1)
+            z1 = self.linear_z1(vec1, vec2) if self.use_bilinear else self.linear_z1(torch.cat((vec1, vec2), dim=1))
+            o1 = self.linear_o1(nn.Sigmoid()(z1)*h1)
+        else:
+            h1 = self.linear_h1(vec1)
+            o1 = self.linear_o1(h1)
+
+        if self.gate2:
+            h2 = self.linear_h2(vec2)
+            z2 = self.linear_z2(vec1, vec2) if self.use_bilinear else self.linear_z2(torch.cat((vec1, vec2), dim=1))
+            o2 = self.linear_o2(nn.Sigmoid()(z2)*h2)
+        else:
+            h2 = self.linear_h2(vec2)
+            o2 = self.linear_o2(h2)
+
+        ### Fusion
+        o1 = torch.cat((o1, torch.cuda.FloatTensor(o1.shape[0], 1).fill_(1)), 1)
+        o2 = torch.cat((o2, torch.cuda.FloatTensor(o2.shape[0], 1).fill_(1)), 1)
+        o12 = torch.bmm(o1.unsqueeze(2), o2.unsqueeze(1)).flatten(start_dim=1) # BATCH_SIZE X 1024
+        out = self.post_fusion_dropout(o12)
+        out = self.encoder1(out)
+        if self.skip: out = torch.cat((out, vec1, vec2), 1)
+        out = self.encoder2(out)
+        return out
+
+
+class Attn_Net_Gated(nn.Module):
+    def __init__(self, L=1024, D=256, dropout=False, n_classes=1):
+        r"""
+        Attention Network with Sigmoid Gating (3 fc layers)
+
+        args:
+            L (int): input feature dimension
+            D (int): hidden layer dimension
+            dropout (bool): whether to apply dropout (p = 0.25)
+            n_classes (int): number of classes
+        """
+        super(Attn_Net_Gated, self).__init__()
+        self.attention_a = [
+            nn.Linear(L, D),
+            nn.Tanh()]
+
+        self.attention_b = [nn.Linear(L, D), nn.Sigmoid()]
+        if dropout:
+            self.attention_a.append(nn.Dropout(0.25))
+            self.attention_b.append(nn.Dropout(0.25))
+
+        self.attention_a = nn.Sequential(*self.attention_a)
+        self.attention_b = nn.Sequential(*self.attention_b)
+        self.attention_c = nn.Linear(D, n_classes)
+
+    def forward(self, x):
+        a = self.attention_a(x)
+        b = self.attention_b(x)
+        A = a.mul(b)
+        A = self.attention_c(A)  # N x n_classes
+        return A, x
