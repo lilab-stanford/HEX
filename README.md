@@ -2,7 +2,7 @@
 ===========
 ## AI-enabled virtual spatial proteomics from histopathology for interpretable biomarker discovery in lung cancer
 
-**Abstract:** Spatial proteomics enables high-resolution mapping of protein expression and can transform our understanding of biology and disease. However, significant challenges remain for the clinical translation, including cost, complexity, and scalability. Here, we present HEX (H&E to protein eXpression), an AI model designed to computationally generate spatial proteomics profiles from standard histopathology slides. Trained on 755,000 histopathology images with matched protein expression, HEX accurately predicts the expression of 40 biomarkers encompassing immune, structural, and functional programs from H&E images. HEX demonstrates substantial performance gains over alternative methods in validation datasets comprised of 372 tumor samples. We develop a multimodal data integration approach that combines the original H&E and AI-derived virtual spatial proteomics to enhance outcome prediction. Applied to six independent NSCLC cohorts totaling 2,298 patients, HEX-enabled multimodal integration improved prognostic accuracy by 22% and immunotherapy response prediction by 24–39% compared with conventional clinicopathological and molecular biomarkers. Biological interpretation revealed spatially organized tumor–immune niches predictive of therapeutic response, including the co-localization of stem-like T helper cells and cytotoxic T cells in responders, and immunosuppressive tumor-associated macrophage and neutrophil aggregates in non-responders. HEX provides a low-cost and scalable approach to study spatial biology and enables the discovery and clinical translation of interpretable biomarkers for precision medicine.
+**Abstract:** Spatial proteomics enables high-resolution mapping of protein expression and can transform our understanding of biology and disease. However, major challenges remain for clinical translation, including cost, complexity and scalability. Here we present H&E to protein expression (HEX), an AI model designed to computationally generate spatial proteomics profiles from standard histopathology slides. Trained and validated on 819,000 histopathology image tiles with matched protein expression from 382 tumor samples, HEX accurately predicts the expression of 40 biomarkers encompassing immune, structural and functional programs. HEX demonstrates substantial performance gains over alternative methods for protein expression prediction from H&E images. We develop a multimodal data integration approach that combines the original H&E image and AI-derived virtual spatial proteomics to enhance outcome prediction. Applied to six independent non-small-cell lung cancer cohorts totaling 2,298 patients, HEX-enabled multimodal integration improved prognostic accuracy by 22% and immunotherapy response prediction by 24–39% compared with conventional clinicopathological and molecular biomarkers. Biological interpretation revealed spatially organized tumor–immune niches predictive of therapeutic response, including the co-localization of T helper cells and cytotoxic T cells in responders, and immunosuppressive tumor-associated macrophage and neutrophil aggregates in non-responders. HEX provides a low-cost and scalable approach to study spatial biology and enables the discovery and clinical translation of interpretable biomarkers for precision medicine.
 
 ## Dependencies:
 
@@ -27,6 +27,7 @@
 * Use the palom package to co-register CODEX and H&E images and obtain the registered CODEX images.
 * Run `extract_marker_info_patch.py` to extract protein expression for each image patch.
 * Construct the dataset with paired histopathology images and matched protein expression using the `extract_he_patch.py` script.
+* Create patient-level splits for both HEX and MICA using CLAM-style split utilities (from `mahmoodlab/CLAM`) based on your cohort metadata, then run `check_splits.py` to sanity-check split integrity.
 
 ## Step 2: train and test HEX
 * Start training using `torchrun --nnodes=1 --nproc-per-node=8 ./hex/train_dist_codex_lung_marker.py`. 
@@ -35,22 +36,21 @@ Logs and checkpoints will be saved to writer_dir and checkpoint_dir, respectivel
 Output results will be stored in `save_dir`. To get you started, example data are provided in the folder `hex/sample_data`.
 
 ## Step 3: train and test MICA
-* Use CLAM to preprocess WSIs and generate histology feature bag via MUSK. This step follows the MCAT pipeline.
-* Apply the trained HEX to generate corresponding CODEX image for each WSI, then run `codex_h5_png2fea.py` to construct CODEX feature bag via DINOv2
-* Start training via run `train_mica.py`. For unimodal training, you can run `python train_mica.py --mode path`. For multimodal training, you can run `python train_mica.py --mode coattn`
-Resulting training logs and model checkpoints will be placed in `results_di`r. Example data are provided in `mica/sample_data`, and your data structure should follow the MCAT format.
-* Evaluate your model checkpoint by running `python test_mica.py`. The results are placed into `results_pkl_path`.
-* To explore biological relevance of the model predictions, users can explore the spatial patterns using the calculated integrated gradients (IG) values genereated by `test_mica.py` alongside the corresponding CODEX images.
-
+* Use CLAM to preprocess WSIs and generate histology feature bags (MCAT-style pipeline).
+* Apply a trained HEX model to generate the corresponding CODEX images for each WSI, then run `codex_h5_png2fea.py` to construct CODEX feature bags (DINOv2).
+* Train MICA with `train_mica.py`, e.g. `python train_mica.py --mode coattn --base_path your_path --gc 8 --project_name your_project --max_epochs 20 --lr 1e-5`. Training logs and checkpoints will be saved under `results_dir`.
+  Example data are provided in `mica/sample_data`. Your data layout should follow the MCAT format.
+* Evaluate a checkpoint with `test_mica.py` (results will be saved as a `.pkl` in the corresponding results folder).
+* For interpretability, `test_mica.py` can also compute integrated gradients to visualize spatial patterns.
 
 
 ## Acknowledgments
 This project builds upon many open-source repositories such as CLAM (https://github.com/mahmoodlab/CLAM), MCAT (https://github.com/mahmoodlab/MCAT), imbalanced-regression (https://github.com/YyzHarry/imbalanced-regression), and Palom (https://github.com/labsyspharm/palom). We thank the authors and contributors to these repositories.
 ## License
-This repository is licensed under the CC-BY-NC-ND 4.0 license.
+This repository is licensed under the CC-BY-NC-ND 4.0 license. This repository includes/depends on third-party components that are licensed under their respective licenses . Please refer to each project for details.
 ## Citation
 If you find our work useful in your research, please consider citing:
-
+* Li, Z., Li, Y., Xiang, J. et al. AI-enabled virtual spatial proteomics from histopathology for interpretable biomarker discovery in lung cancer. Nat Med 32, 231–244 (2026). https://doi.org/10.1038/s41591-025-04060-4
 
 
 
