@@ -25,7 +25,7 @@ class CustomModel(nn.Module):
             nn.Linear(128, num_outputs),
         )
 
-    def forward(self, x,epoch):
+    def forward(self, x):
         x = self.visual(
             image=x,
             with_head=False,
