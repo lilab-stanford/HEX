@@ -12,7 +12,8 @@ from scipy.stats import pearsonr
 from tqdm import tqdm
 from timm.data.constants import IMAGENET_INCEPTION_MEAN, IMAGENET_INCEPTION_STD
 from torch.cuda.amp import autocast
-from hex.hex_architecture import CustomModel
+from hex_architecture import CustomModel
+from utils import PatchDataset
 
 # Define biomarker names
 biomarker_names = {
@@ -61,10 +62,11 @@ biomarker_names = {
 def load_model(checkpoint_path):
     try:
         model = CustomModel(visual_output_dim=1024, num_outputs=40)
-        model.load_state_dict(torch.load(checkpoint_path, map_location='cpu'), strict=False)
+        sd = torch.load(checkpoint_path, map_location='cpu')
+        incompat = model.load_state_dict(sd, strict=False)
+        print(f"[load_state_dict] missing_keys={len(incompat.missing_keys)} unexpected_keys={len(incompat.unexpected_keys)}")
         model = nn.DataParallel(model).cuda()
         model.eval()
-        model.module.training_status = False
         return model
     except Exception as e:
         print(f"Error loading model: {e}")
@@ -78,18 +80,25 @@ def main():
     model = load_model(checkpoint_path)
 
     # Prepare the dataset
-    data_dir = ""
+    data_dir = "./sample_data/"
     img_dir = Path(data_dir) / "he_patches"
     csv_dir = Path(data_dir) / "channel_registered"
 
     print("Loading data...")
-    #filter patients if need
-    patient_ids = [csv_file.stem.split('_')[0] for csv_file in csv_dir.glob('*.csv')]
+    # Filter patients if needed (default: use sample_data/splits_0.csv if present)
+    all_ids = [csv_file.stem for csv_file in csv_dir.glob('*.csv')]
+    patient_ids = all_ids
+
+    split_csv = Path(data_dir) / "splits_0.csv"
+    if split_csv.exists():
+        split_df = pd.read_csv(split_csv)
+        patient_ids = [str(int(x)) for x in split_df["val"].dropna().tolist()]
+
     all_patches = []
-    for train_id in tqdm(patient_ids, desc="Loading CSVs"):
-        train_csv = pd.read_csv(join(csv_dir, f'{train_id}.csv'))
-        train_csv['patch_id'] = train_csv['slide'].astype(str) + '_' + train_csv['index'].astype(str)
-        all_patches.append(train_csv)
+    for val_id in tqdm(patient_ids, desc="Loading CSVs"):
+        val_csv = pd.read_csv(join(csv_dir, f'{val_id}.csv'))
+        val_csv['patch_id'] = val_csv['slide'].astype(str) + '_' + val_csv['index'].astype(str)
+        all_patches.append(val_csv)
     all_patches = pd.concat(all_patches)
     all_patches.reset_index(drop=True, inplace=True)
     all_patches['images'] = str(img_dir) + '/' + all_patches['slide'].astype(str) + '/' + all_patches['slide'].astype(
@@ -115,9 +124,9 @@ def main():
     with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.float16):
         val_loop = tqdm(enumerate(dataloader), total=len(dataloader))
         for i, data in val_loop:
-            inputs, labels = data[0].to(device,non_blocking=True), data[1].to(torch.float16)
+            inputs, labels = data[0].to(device,non_blocking=True), data[1].to(torch.float32)
             image_paths = data[2]
-            outputs,_ = model(inputs,labels,0)
+            outputs,_ = model(inputs,0)
             all_preds.extend(outputs.detach().cpu().numpy())
             all_labels.extend(labels.numpy())
             all_image_paths.extend(image_paths)
@@ -126,9 +135,8 @@ def main():
     all_preds = np.array(all_preds)
     all_labels = np.array(all_labels)
 
-    torch.cuda.empty_cache()  # Free up GPU memory
+    torch.cuda.empty_cache()
 
-    # Create DataFrame with predictions and labels for each patch
     patch_results = []
     for i, image_path in enumerate(all_image_paths):
         slide_id, patch_index = Path(image_path).stem.split('_')
@@ -143,16 +151,14 @@ def main():
 
     patch_df = pd.DataFrame(patch_results)
     patch_df.to_csv(join(save_dir,"patch_predictions.csv"), index=False)
-    print("Patch-level predictions and labels saved to patch_predictions_and_labels.csv")
+    print("Patch-level predictions and labels saved to patch_predictions.csv")
 
-    # Calculate Pearson R for each biomarker
     print("Calculating Pearson correlations...")
     pearson_r_values = []
     for i in tqdm(range(all_labels.shape[1]), desc="Calculating correlations"):
         r, _ = pearsonr(all_labels[:, i].astype(np.float64), all_preds[:, i].astype(np.float64))
         pearson_r_values.append(r)
 
-    # Print and save results
     results = []
     for i, r in enumerate(pearson_r_values):
         biomarker = biomarker_names[i+1]
@@ -163,7 +169,7 @@ def main():
     results_df = pd.DataFrame(results)
     results_df = results_df.sort_values("Pearson_R", ascending=False)
     results_df.to_csv(join(save_dir,"biomarker_pearson_r.csv"), index=False)
-    print("Results saved to biomarker_pearson_r_results.csv")
+    print("Results saved to biomarker_pearson_r.csv")
 
     # Print summary statistics
     print("\nSummary Statistics:")

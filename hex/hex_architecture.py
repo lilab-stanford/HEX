@@ -1,15 +1,9 @@
 
-import os
-import random
 import torch
 import torch.nn as nn
-import numpy as np
-from os.path import join
 from PIL import Image
-from torch.utils.data import Dataset
-from torchvision import transforms
 from timm import create_model
-from musk import utils, modeling
+from musk import utils
 
 
 class CustomModel(nn.Module):
@@ -31,7 +25,7 @@ class CustomModel(nn.Module):
             nn.Linear(128, num_outputs),
         )
 
-    def forward(self, x,labels,epoch):
+    def forward(self, x,epoch):
         x = self.visual(
             image=x,
             with_head=False,
