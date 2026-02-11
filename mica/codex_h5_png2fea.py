@@ -18,19 +18,18 @@ from transformers import AutoImageProcessor, AutoModel
 
 def check_mag(wsi):
     try:
-        currMPP = float(wsi.properties['aperio.MPP'])
+        currMPP = float(wsi.properties.get('aperio.MPP', wsi.properties.get(openslide.PROPERTY_NAME_MPP_X, 0.25)))
     except:
-        try:
-            currMPP = float(wsi.properties[openslide.PROPERTY_NAME_MPP_X])
-        except:
-            currMPP = 0.25
+        currMPP = 0.25
+
     if currMPP < 0.2:
-        mag = 80
-    elif currMPP >= 0.2 and currMPP < 0.3:
-        mag = 40
-    elif currMPP >= 0.4 and currMPP < 0.6:
-        mag = 20
-    return mag
+        return 80
+    elif currMPP < 0.3:
+        return 40
+    elif currMPP < 0.6:
+        return 20
+    else:
+        return 20
 
 
 slide_ext = '.svs'
@@ -83,12 +82,11 @@ class ImageChannelDataset(Dataset):
         if img.ndim != 3 or img.shape[2] != self.num_channels:
             raise ValueError(f"Expected image shape [H, W, {self.num_channels}], got {img.shape}")
 
-        # Extract the specific channel and stack it
-        channel = img[:, :, channel_idx]
-        channel_stacked = np.stack([channel, channel, channel], axis=2)
-
-        # Convert to PIL Image
-        channel_pil = Image.fromarray(channel_stacked.astype('uint8'))
+        # Extract the specific channel
+        channel = img[:, :, channel_idx].astype(np.float32)
+        channel_u8 = (np.clip(channel, 0.0, 1.0) * 255.0).round().astype(np.uint8)
+        channel_stacked = np.stack([channel_u8, channel_u8, channel_u8], axis=2)
+        channel_pil = Image.fromarray(channel_stacked, mode='RGB')
 
         if self.transform:
             channel_transformed = self.transform(channel_pil)
