@@ -3,7 +3,7 @@ from pathlib import Path
 import pandas as pd
 
 
-HEX_SAMPLE_DIR = Path("./sample_data")
+HEX_SAMPLE_DIR = Path("./hex/sample_data")
 MICA_ROOT = Path("./mica/tcga_splits")
 
 
