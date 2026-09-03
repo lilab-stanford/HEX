@@ -122,6 +122,13 @@ class MCAT_Surv(nn.Module):
 
         return hazards, S, Y_hat, attention_scores
 
+    def captum(self, x_path, x_codex):
+        risks = []
+        for path_sample in x_path:
+            _, survival, _, _ = self.forward(x_path=path_sample, x_codex=x_codex)
+            risks.append(-torch.sum(survival, dim=1))
+        return torch.cat(risks, dim=0)
+
 
 ###
 # ========== Modifying PyTorch Functionalities ======================
