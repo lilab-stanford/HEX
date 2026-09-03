@@ -34,6 +34,7 @@
 Logs and checkpoints will be saved to writer_dir and checkpoint_dir, respectively.
 * Evaluate your model checkpoint by running `python test_codex_lung_marker.py` with checkpoint_path specify the `<save_location>/models/your_checkpoint.pth`. 
 Output results will be stored in `save_dir`. To get you started, example data are provided in the folder `hex/sample_data`.
+* For slide-level inference, use CLAM to generate WSI patch coordinates, then run `hex/infer_slide_h5.py` with the WSI, coordinate H5, and trained HEX checkpoint. The script writes a per-slide H5 containing `coords` and `codex_prediction`; `hex/virtual_codex_from_h5.py` spatially rasterizes these patch-level predictions into the virtual CODEX representation. HEX outputs one 40-dimensional marker-expression vector per H&E patch.
 
 ## Step 3: train and test MICA
 * Use CLAM to preprocess WSIs and generate histology feature bags (MCAT-style pipeline).
@@ -51,6 +52,4 @@ This repository is licensed under the CC-BY-NC-ND 4.0 license. This repository i
 ## Citation
 If you find our work useful in your research, please consider citing:
 * Li, Z., Li, Y., Xiang, J. et al. AI-enabled virtual spatial proteomics from histopathology for interpretable biomarker discovery in lung cancer. Nat Med 32, 231–244 (2026). https://doi.org/10.1038/s41591-025-04060-4
-
-
 
