@@ -33,7 +33,7 @@ def process_slide(file, label_dir, he_dir, output_dir, patch_size):
             patch = patch.convert('RGB')
 
             # Save the patch as PNG
-            patch_filename = f"{row['slide_index']}.png"
+            patch_filename = f"{he_id}_{int(row['index'])}.png"
             patch_path = os.path.join(slide_output_dir, patch_filename)
             patch.save(patch_path)
 
