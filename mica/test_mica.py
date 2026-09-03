@@ -16,9 +16,7 @@ from sksurv.metrics import concordance_index_censored
 from captum.attr import IntegratedGradients
 
 ### Internal Imports
-from datasets.dataset_survival import Generic_WSI_Survival_Dataset, Generic_MIL_Survival_Dataset
-from file_utils import save_pkl, load_pkl
-from core_utils import train
+from dataset import Generic_MIL_Survival_Dataset
 from utils import *
 from models.model_coattn import MCAT_Surv
 
@@ -53,14 +51,12 @@ def summary_survival(model, loader, n_classes,use_ig):
         hazards, survival, Y_hat, A = model(x_path=data_WSI, x_codex=codex_feature)
         if use_ig:
             model.zero_grad()
+            ig_input = data_WSI.unsqueeze(0)
             def interpret_patient_mm(x0):
-                return model.captum(x_path=x0)
+                return model.captum(x_path=x0, x_codex=codex_feature)
             ig = IntegratedGradients(interpret_patient_mm)
-            data_WSI.requires_grad_()
-            codex_feature.requires_grad_()
-            ig_attr = ig.attribute(data_WSI)
-            ig_attr = ig_attr.detach().cpu().numpy()
-            ig_attr = np.sum(ig_attr, axis=1)
+            ig_attr = ig.attribute(ig_input, baselines=torch.zeros_like(ig_input))
+            ig_attr = ig_attr.detach().cpu().numpy()[0].sum(axis=1)
         else:
             ig_attr=None
 
@@ -151,7 +147,7 @@ def main(args):
             print('Done!')
 
             model.load_state_dict(torch.load(os.path.join(args.results_dir, "s_{}_checkpoint.pt".format(i)), map_location=device))
-            use_ig=False
+            use_ig=args.use_ig
             results_val_dict, val_cindex = summary_survival(model, val_loader, args.n_classes,use_ig)
             print('Val c-Index: {:.4f}'.format(val_cindex))
             latest_val_cindex.append(val_cindex)
@@ -175,7 +171,7 @@ def main(args):
 ### Training settings
 parser = argparse.ArgumentParser(description='Configurations for Survival Analysis on TCGA Data.')
 ### Checkpoint + Misc. Pathing Parameters
-parser.add_argument('--data_root_dir', type=str, default='path/to/data_root_dir',
+parser.add_argument('--base_path', type=str, default='base_path',
                     help='Data directory to WSI features (extracted via CLAM')
 parser.add_argument('--seed', type=int, default=1, help='Random seed for reproducible experiment (default: 1)')
 parser.add_argument('--k', type=int, default=5, help='Number of folds (default: 5)')
@@ -226,12 +222,18 @@ parser.add_argument('--alpha_surv', type=float, default=0.0, help='How much to w
 parser.add_argument('--lambda_reg', type=float, default=1e-4, help='L1-Regularization Strength (Default 1e-4)')
 parser.add_argument('--weighted_sample', action='store_true', default=False, help='Enable weighted sampling')
 parser.add_argument('--early_stopping', action='store_true', default=False, help='Enable early stopping')
+parser.add_argument('--use_ig', action='store_true', default=False,
+                    help='Compute Integrated Gradients attribution scores for H&E patch features')
 
 args = parser.parse_args()
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 args.split_dir = args.project_name
 args.task = '_'.join(args.split_dir.split('_')[:2]) + '_survival'
 args = get_custom_exp_code(args)
+args.split_dir = f"{args.base_path}/{args.project_name.upper()}/splits"
+args.data_dir = f"{args.base_path}/{args.project_name.upper()}/features"
+args.codex_deep = f"{args.base_path}/{args.project_name.upper()}/he2codex/fea_files/features.h5"
+args.csv_path = f"{args.base_path}/{args.project_name.upper()}/{args.project_name}_clin.csv"
 
 ### Sets Seed for reproducible experiments.
 def seed_torch(seed=7):
@@ -279,7 +281,6 @@ if 'survival' in args.task:
                                            mode=args.mode,
                                            apply_sig=args.apply_sig,
                                            data_dir=args.data_dir,
-                                           shuffle=False,
                                            seed=args.seed,
                                            print_info=True,
                                            patient_strat=False,
