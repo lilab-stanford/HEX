@@ -35,6 +35,7 @@ Logs and checkpoints will be saved to writer_dir and checkpoint_dir, respectivel
 * Evaluate your model checkpoint by running `python test_codex_lung_marker.py` with checkpoint_path specify the `<save_location>/models/your_checkpoint.pth`. 
 Output results will be stored in `save_dir`. To get you started, example data are provided in the folder `hex/sample_data`.
 * For slide-level inference, use CLAM to generate WSI patch coordinates, then run `hex/infer_slide_h5.py` with the WSI, coordinate H5, and trained HEX checkpoint. The script writes a per-slide H5 containing `coords` and `codex_prediction`; `hex/virtual_codex_from_h5.py` spatially rasterizes these patch-level predictions into the virtual CODEX representation. HEX outputs one 40-dimensional marker-expression vector per H&E patch.
+* A HEX checkpoint trained on the public Bern/Nolan dataset using 48 shared marker channels is available on [Hugging Face](https://huggingface.co/zli1893/hex_nolan48) and can be used with `hex/infer_slide_h5_nolan48.py`.
 
 ## Step 3: train and test MICA
 * Use CLAM to preprocess WSIs and generate histology feature bags (MCAT-style pipeline).
